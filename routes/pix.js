@@ -5,7 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const { db } = require('../database');
 const { authenticateToken } = require('./auth');
 
-const SIGILOPAY_BASE_URL = process.env.SIGILOPAY_BASE_URL || 'https://app.sigilopay.com.br/api/v1';
+const SIGILOPAY_BASE_URL = process.env.SIGILOPAY_BASE_URL || 'https://app.sigilopay.com.br';
 const SIGILOPAY_PUBLIC_KEY = process.env.SIGILOPAY_PUBLIC_KEY;
 const SIGILOPAY_SECRET_KEY = process.env.SIGILOPAY_SECRET_KEY;
 const WEBHOOK_BASE_URL = process.env.WEBHOOK_BASE_URL || 'http://localhost:3000';
@@ -32,30 +32,30 @@ router.post('/create', authenticateToken, async (req, res) => {
 
         try {
             const response = await axios.post(
-                `${SIGILOPAY_BASE_URL}/payments`,
+                SIGILOPAY_BASE_URL + '/gateway/pix/receive',
                 {
                     identifier: identifier,
                     amount: amount,
                     client: {
                         name: user.name,
-                        email: user.email
+                        email: user.email,
+                        phone: '(11) 99999-9999',
+                        document: '123.456.789-00'
                     },
-                    callbackUrl: `${WEBHOOK_BASE_URL}/webhook/sigilopay`
+                    callbackUrl: WEBHOOK_BASE_URL + '/webhook/sigilopay'
                 },
                 { headers: sigiloHeaders() }
             );
 
             const data = response.data;
 
-            if (data.status !== 'OK') {
+            if (data.status !== 'OK' && data.status !== 'PENDING') {
                 return res.status(400).json({ error: data.errorDescription || 'Erro ao criar cobranca PIX' });
             }
 
             const txId = uuidv4();
             db.run(
-                `INSERT INTO pix_transactions 
-                 (id, user_id, identifier, sigilopay_transaction_id, amount, status, webhook_token, pix_code, qr_code_base64) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                'INSERT INTO pix_transactions (id, user_id, identifier, sigilopay_transaction_id, amount, status, webhook_token, pix_code, qr_code_base64) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 [
                     txId,
                     userId,
@@ -64,15 +64,14 @@ router.post('/create', authenticateToken, async (req, res) => {
                     amount,
                     'PENDING',
                     data.webhookToken,
-                    data.pix?.code || null,
-                    data.pix?.qrCodeBase64 || data.pix?.qrCode || null
+                    data.pix && data.pix.code ? data.pix.code : null,
+                    data.pix && data.pix.qrCodeBase64 ? data.pix.qrCodeBase64 : null
                 ],
                 function(err) {
                     if (err) return res.status(500).json({ error: 'Erro ao salvar transacao' });
 
                     db.run(
-                        `INSERT INTO wallet_history (id, user_id, type, amount, status, description, reference_id)
-                         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                        'INSERT INTO wallet_history (id, user_id, type, amount, status, description, reference_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
                         [uuidv4(), userId, 'deposit', amount, 'PENDING', 'Deposito via PIX', txId]
                     );
 
@@ -81,16 +80,19 @@ router.post('/create', authenticateToken, async (req, res) => {
                         transactionId: txId,
                         identifier: identifier,
                         amount: amount,
-                        pixCode: data.pix?.code || null,
-                        qrCodeBase64: data.pix?.qrCodeBase64 || null,
+                        pixCode: data.pix && data.pix.code ? data.pix.code : null,
+                        qrCodeBase64: data.pix && data.pix.qrCodeBase64 ? data.pix.qrCodeBase64 : null,
                         status: 'PENDING'
                     });
                 }
             );
 
         } catch (error) {
-            console.error('Erro SigiloPay:', error.response?.data || error.message);
-            res.status(500).json({ error: error.response?.data?.message || 'Erro ao gerar cobranca PIX' });
+            console.error('Erro SigiloPay:', error.response ? error.response.data : error.message);
+            var errMsg = 'Erro ao gerar cobranca PIX';
+            if (error.response && error.response.data && error.response.data.message) errMsg = error.response.data.message;
+            if (error.response && error.response.data && error.response.data.errorDescription) errMsg = error.response.data.errorDescription;
+            res.status(500).json({ error: errMsg });
         }
     });
 });
